@@ -455,7 +455,7 @@ class CreateContainerTask(BaseTaskHandler):
 
         if response.is_failed():
             raise ContainerError('Image build failed. OSBS build id: %s' %
-                                 osbs_build_id)
+                                 build_id)
 
         repositories = []
         if response.is_succeeded():
