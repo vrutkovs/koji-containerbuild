@@ -640,6 +640,15 @@ class BuildContainerTask(BaseTaskHandler):
                 if koji_build_id:
                     all_koji_builds.append(koji_build_id)
 
+            this_task = self.session.getTaskInfo(self.id)
+            owner_info = self.session.getUser(this_task['owner'])
+            for koji_build_id in all_koji_builds:
+                args = [owner_info, koji_build_id, target_info, 'http://fake']
+                self.logger.debug("Sending a build notification: %s" % args)
+                task_id = self.session.host.subtask(
+                    'buildNotification', args, this_task)
+                self.logger.debug("Sent a build notification, task id = %s" % task_id)
+
         except (SystemExit, ServerExit, KeyboardInterrupt):
             # we do not trap these
             raise
