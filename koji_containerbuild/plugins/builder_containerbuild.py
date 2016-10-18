@@ -29,19 +29,14 @@ import logging
 import imp
 import time
 import traceback
-import urlgrabber
-import urlgrabber.grabber
 import dockerfile_parse
 import pycurl
+import multiprocessing
 
 import koji
 from koji.daemon import SCM
 from koji.tasks import ServerExit, BaseTaskHandler
 
-import osbs
-import osbs.core
-import osbs.api
-import osbs.http
 from osbs.api import OSBS
 from osbs.conf import Configuration
 
@@ -250,32 +245,26 @@ class LabelsWrapper(object):
             return "%s (or %s)" % (label_map[0], " or ".join(label_map[1:]))
 
 
-class CreateContainerTask(BaseTaskHandler):
-    Methods = ['createContainer']
-    _taskWeight = 2.0
+class BuildContainerTask(BaseTaskHandler):
+    Methods = ['buildContainer']
+    # We mostly just wait on other tasks. Same value as for regular 'build'
+    # method.
+    _taskWeight = 0.2
 
     def __init__(self, id, method, params, session, options, workdir=None):
         BaseTaskHandler.__init__(self, id, method, params, session, options,
                                  workdir)
         self._osbs = None
-        self._scratch_build = False
+        self._scratch_build = None
 
     def osbs(self):
         """Handler of OSBS object"""
         if not self._osbs:
-            osbs.logger = logging.getLogger("%s.osbs" % self.logger.name)
-            osbs.core.logger = logging.getLogger("%s.osbs.core" %
-                                                 self.logger.name)
-            osbs.api.logger = logging.getLogger("%s.osbs.api" %
-                                                self.logger.name)
-            osbs.http.logger = logging.getLogger("%s.osbs.http" %
-                                                 self.logger.name)
-            osbs.logger.debug("osbs logger installed")
             os_conf = Configuration()
             build_conf = Configuration()
-            if self._scratch_build:
-                build_conf = Configuration(conf_section='scratch')
+            if self.opts.get('scratch'):
                 os_conf = Configuration(conf_section='scratch')
+                build_conf = Configuration(conf_section='scratch')
             self._osbs = OSBS(os_conf, build_conf)
             assert self._osbs
         return self._osbs
@@ -366,8 +355,38 @@ class CreateContainerTask(BaseTaskHandler):
 
         return error_message
 
-    def handler(self, src, target_info, arch, scratch=False,
-                yum_repourls=None, branch=None, push_url=None):
+    def check_whitelist(self, name, target_info):
+        """Check if container name is whitelisted in destination tag
+
+        Raises with koji.BuildError if package is not whitelisted or blocked.
+        """
+        pkg_cfg = self.session.getPackageConfig(target_info['dest_tag_name'],
+                                                name)
+        self.logger.debug("%r" % pkg_cfg)
+        # Make sure package is on the list for this tag
+        if pkg_cfg is None:
+            raise koji.BuildError("package (container) %s not in list for tag %s" % (name, target_info['dest_tag_name']))
+        elif pkg_cfg['blocked']:
+            raise koji.BuildError("package (container)  %s is blocked for tag %s" % (name, target_info['dest_tag_name']))
+
+    def runBuilds(self, src, target_info, arches, scratch=False,
+                  yum_repourls=None, branch=None, push_url=None):
+
+        self.logger.debug("Spawning jobs for arches: %r" % (arches))
+        pool = multiprocessing.Pool()
+        results = []
+        for arch in arches:
+            results.append(pool.apply_async(
+                self.createContainer,
+                args=(src, target_info, arch, scratch, yum_repourls, branch, push_url)))
+
+        pool.close()
+        pool.join()
+
+        self.logger.debug("Results: %r", results)
+        return results
+
+    def createContainer(self, src, target_info, arch, scratch, yum_repourls, branch, push_url):
         if not yum_repourls:
             yum_repourls = []
 
@@ -496,72 +515,6 @@ class CreateContainerTask(BaseTaskHandler):
 
         return containerdata
 
-
-class BuildContainerTask(BaseTaskHandler):
-    Methods = ['buildContainer']
-    # We mostly just wait on other tasks. Same value as for regular 'build'
-    # method.
-    _taskWeight = 0.2
-
-    def __init__(self, id, method, params, session, options, workdir=None):
-        BaseTaskHandler.__init__(self, id, method, params, session, options,
-                                 workdir)
-        self._osbs = None
-
-    def osbs(self):
-        """Handler of OSBS object"""
-        if not self._osbs:
-            os_conf = Configuration()
-            build_conf = Configuration()
-            if self.opts.get('scratch'):
-                os_conf = Configuration(conf_section='scratch')
-                build_conf = Configuration(conf_section='scratch')
-            self._osbs = OSBS(os_conf, build_conf)
-            assert self._osbs
-        return self._osbs
-
-    def check_whitelist(self, name, target_info):
-        """Check if container name is whitelisted in destination tag
-
-        Raises with koji.BuildError if package is not whitelisted or blocked.
-        """
-        pkg_cfg = self.session.getPackageConfig(target_info['dest_tag_name'],
-                                                name)
-        self.logger.debug("%r" % pkg_cfg)
-        # Make sure package is on the list for this tag
-        if pkg_cfg is None:
-            raise koji.BuildError("package (container) %s not in list for tag %s" % (name, target_info['dest_tag_name']))
-        elif pkg_cfg['blocked']:
-            raise koji.BuildError("package (container)  %s is blocked for tag %s" % (name, target_info['dest_tag_name']))
-
-    def runBuilds(self, src, target_info, arches, scratch=False,
-                  yum_repourls=None, branch=None, push_url=None):
-        self.logger.debug("Spawning jobs for arches: %r" % (arches))
-        subtasks = {}
-        for arch in arches:
-            if koji.util.multi_fnmatch(arch, self.options.literal_task_arches):
-                taskarch = arch
-            else:
-                taskarch = koji.canonArch(arch)
-            subtasks[arch] = self.session.host.subtask(method='createContainer',
-                                                       arglist=[src,
-                                                                target_info,
-                                                                arch,
-                                                                scratch,
-                                                                yum_repourls,
-                                                                branch,
-                                                                push_url,
-                                                                ],
-                                                       label='%s-container' % arch,
-                                                       parent=self.id,
-                                                       arch=taskarch)
-        self.logger.debug("Got image subtasks: %r", (subtasks))
-        self.logger.debug("Waiting on image subtasks...")
-        results = self.wait(subtasks.values(), all=True, failany=True)
-
-        self.logger.debug("Results: %r", results)
-        return results
-
     def getArchList(self, build_tag, extra=None):
         """Copied from build task"""
         # get list of arches to build for
@@ -623,17 +576,7 @@ class BuildContainerTask(BaseTaskHandler):
 
         return {'epoch': epoch}
 
-    def handler(self, src, target, opts=None):
-        if not opts:
-            opts = {}
-        self.opts = opts
-        data = {}
-
-        self.event_id = self.session.getLastEvent()['id']
-        target_info = self.session.getBuildTarget(target, event=self.event_id)
-        build_tag = target_info['build_tag']
-        archlist = self.getArchList(build_tag)
-
+    def checkLabels(self, src):
         dockerfile_path = self.fetchDockerfile(src)
         labels_wrapper = LabelsWrapper(dockerfile_path,
                                        logger_name=self.logger.name)
@@ -645,8 +588,20 @@ class BuildContainerTask(BaseTaskHandler):
                             "Dockerfile: %s.")
             raise koji.BuildError, (msg_template %
                                     ', '.join(formatted_labels_list))
+        return (labels_wrapper.get_extra_data(), labels_wrapper.get_expected_nvr())
 
-        data = labels_wrapper.get_extra_data()
+    def handler(self, src, target, opts=None):
+        if not opts:
+            opts = {}
+        self.opts = opts
+        data = {}
+
+        self.event_id = self.session.getLastEvent()['id']
+        target_info = self.session.getBuildTarget(target, event=self.event_id)
+        build_tag = target_info['build_tag']
+        archlist = self.getArchList(build_tag)
+
+        data, expected_nvr = self.checkLabels(src)
         admin_opts = self._get_admin_opts(opts)
         data.update(admin_opts)
 
@@ -665,7 +620,6 @@ class BuildContainerTask(BaseTaskHandler):
 
             # Scratch and auto release builds shouldn't be checked for nvr
             if not self.opts.get('scratch') and not auto_release:
-                expected_nvr = labels_wrapper.get_expected_nvr()
                 try:
                     build_id = self.session.getBuild(expected_nvr)['id']
                 except:
