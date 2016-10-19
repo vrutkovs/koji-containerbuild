@@ -48,7 +48,6 @@ try:
 except IOError:
     kojid = None
 
-
 # List of LABEL identifiers used within Koji. Values doesn't need to correspond
 # to actual LABEL names. All these are required unless there exist default
 # value (see LABEL_DEFAULT_VALUES).
@@ -148,6 +147,9 @@ class FileWatcher(object):
                     fd.close()
                 fd = file(fpath, 'r')
             self._logs[fname] = (fd, stat_info.st_ino, stat_info.st_size, fpath)
+        except OSError:
+            self.logger.error("The build has been cancelled")
+            raise koji.ActionNotAllowed
         except:
             self.logger.error("Error reading mock log: %s", fpath)
             self.logger.error(''.join(traceback.format_exception(*sys.exc_info())))
@@ -413,65 +415,62 @@ class BuildContainerTask(BaseTaskHandler):
             create_build_args['git_branch'] = branch
         if push_url:
             create_build_args['git_push_url'] = push_url
+
         build_response = self.osbs().create_build(
             **create_build_args
         )
         build_id = build_response.get_build_name()
         self.logger.debug("OSBS build id: %r", build_id)
 
-        self.logger.debug("Waiting for osbs build_id: %s to be scheduled.",
-                          build_id)
-        # we need to wait for kubelet to schedule the build, otherwise it's 500
-        self.osbs().wait_for_build_to_get_scheduled(build_id)
-        self.logger.debug("Build was scheduled")
-
         osbs_logs_dir = self.resultdir()
         koji.ensuredir(osbs_logs_dir)
         pid = os.fork()
-        if pid:
-            try:
+
+        try:
+            if pid:
                 self._incremental_upload_logs(pid)
-            except koji.ActionNotAllowed:
-                self.osbs().cancel_build(build_id)
-
-        else:
-            full_output_name = os.path.join(osbs_logs_dir,
-                                            'openshift-incremental.log')
-
-            # Make sure curl is initialized again otherwise connections via SSL
-            # fails with NSS error -8023 and curl_multi.info_read()
-            # returns error code 35 (SSL CONNECT failed).
-            # See http://permalink.gmane.org/gmane.comp.web.curl.library/38759
-            self._osbs = None
-            self.logger.debug("Running pycurl global cleanup")
-            pycurl.global_cleanup()
-
-            # Following retry code is here mainly to workaround bug which causes
-            # connection drop while reading logs after about 5 minutes.
-            # OpenShift bug with description:
-            # https://github.com/openshift/origin/issues/2348
-            # and upstream bug in Kubernetes:
-            # https://github.com/GoogleCloudPlatform/kubernetes/issues/9013
-            retry = 0
-            max_retries = 30
-            while retry < max_retries:
-                try:
-                    self._write_incremental_logs(build_id,
-                                                 full_output_name)
-                except Exception, error:
-                    self.logger.info("Error while saving incremental logs "
-                                     "(retry #%d): %s", retry, error)
-                    retry += 1
-                    time.sleep(10)
-                    continue
-                break
             else:
-                self.logger.info("Gave up trying to save incremental logs "
-                                 "after #%d retries.", retry)
-                os._exit(1)
-            os._exit(0)
+                full_output_name = os.path.join(osbs_logs_dir,
+                                                'openshift-incremental.log')
 
-        response = self.osbs().wait_for_build_to_finish(build_id)
+                # Make sure curl is initialized again otherwise connections via SSL
+                # fails with NSS error -8023 and curl_multi.info_read()
+                # returns error code 35 (SSL CONNECT failed).
+                # See http://permalink.gmane.org/gmane.comp.web.curl.library/38759
+                self._osbs = None
+                self.logger.debug("Running pycurl global cleanup")
+                pycurl.global_cleanup()
+
+                # Following retry code is here mainly to workaround bug which causes
+                # connection drop while reading logs after about 5 minutes.
+                # OpenShift bug with description:
+                # https://github.com/openshift/origin/issues/2348
+                # and upstream bug in Kubernetes:
+                # https://github.com/GoogleCloudPlatform/kubernetes/issues/9013
+                retry = 0
+                max_retries = 30
+                while retry < max_retries:
+                    try:
+                        self._write_incremental_logs(build_id,
+                                                     full_output_name)
+                    except Exception, error:
+                        self.logger.info("Error while saving incremental logs "
+                                         "(retry #%d): %s", retry, error)
+                        retry += 1
+                        time.sleep(10)
+                        continue
+                    break
+                else:
+                    self.logger.info("Gave up trying to save incremental logs "
+                                     "after #%d retries.", retry)
+                    os._exit(1)
+                os._exit(0)
+
+        except koji.ActionNotAllowed:
+            self.logger.warn("Cannot read logs, cancelling build %s", build_id)
+            self.osbs().cancel_build(build_id)
+        finally:
+            response = self.osbs().wait_for_build_to_finish(build_id)
 
         self.logger.debug("OSBS build finished with status: %s. Build "
                           "response: %s.", response.status,
