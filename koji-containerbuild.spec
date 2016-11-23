@@ -55,7 +55,6 @@ Requires:   koji-containerbuild
 Requires:   osbs-client
 Requires:   python-urlgrabber
 Requires:   python-dockerfile-parse
-Requires:   python-pycurl
 
 %description builder
 Builder plugin that extend Koji to communicate with OpenShift build system and
