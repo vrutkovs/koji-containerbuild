@@ -324,16 +324,16 @@ class BuildContainerTask(BaseTaskHandler):
         try:
             build_logs = self.osbs().get_build_logs(build_id,
                                                     follow=True)
-        except Exception, error:
-            msg = "Exception while waiting for build logs: %s" % error
+        except Exception as error:
+            msg = "Exception while waiting for build logs: %r" % error
             raise ContainerError(msg)
         outfile = open(log_filename, 'w')
         try:
             for line in build_logs:
                 outfile.write("%s\n" % line)
                 outfile.flush()
-        except Exception, error:
-            msg = "Exception (%s) while reading build logs: %s" % (type(error),
+        except Exception as error:
+            msg = "Exception (%s) while reading build logs: %r" % (type(error),
                                                                    error)
             raise ContainerError(msg)
         finally:
@@ -351,7 +351,7 @@ class BuildContainerTask(BaseTaskHandler):
             if repo_dict:
                 for repos in repo_dict.values():
                     repositories.extend(repos)
-        except Exception, error:
+        except Exception as error:
             self.logger.error("Failed to get available repositories from: %r. "
                               "Reason(%s): %s",
                               repo_dict, type(error), error)
@@ -476,7 +476,9 @@ class BuildContainerTask(BaseTaskHandler):
         self.logger.debug("Waiting for osbs build_id: %s to be scheduled.",
                           build_id)
         # we need to wait for kubelet to schedule the build, otherwise it's 500
+        self.logger.info("wait_for_build_to_get_scheduled+")
         self.osbs().wait_for_build_to_get_scheduled(build_id)
+        self.logger.info("wait_for_build_to_get_scheduled-")
         self.logger.debug("Build was scheduled")
 
         osbs_logs_dir = self.resultdir()
@@ -524,7 +526,9 @@ class BuildContainerTask(BaseTaskHandler):
                 os._exit(1)
             os._exit(0)
 
+        self.logger.info("wait_for_build_to_finish+")
         response = self.osbs().wait_for_build_to_finish(build_id)
+        self.logger.info("wait_for_build_to_finish-")
 
         self.logger.debug("OSBS build finished with status: %s. Build "
                           "response: %s.", response.status,
