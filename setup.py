@@ -20,8 +20,8 @@ setup(
         'koji_containerbuild.plugins',
     ],
     install_requires=[
-        "koji",
-        "osbs",
+        #"koji",
+        #"osbs",
         #"distutils",
     ],
     scripts=['cli/koji-containerbuild'],
