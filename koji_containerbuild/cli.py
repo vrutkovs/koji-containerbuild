@@ -103,7 +103,11 @@ def handle_container_build(options, session, args):
         parser.error(_("Exactly two arguments (a build target and a SCM URL "
                        "or archive file) are required"))
         assert False
-    clikoji.activate_session(session)
+    # Koji API has changed - activate_session requires two arguments
+    try:
+        clikoji.activate_session(session)
+    except TypeError:
+        clikoji.activate_session(session, options)
     target = args[0]
     if target.lower() == "none" and build_opts.repo_id:
         target = None
