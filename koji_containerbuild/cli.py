@@ -103,11 +103,27 @@ def handle_container_build(options, session, args):
         parser.error(_("Exactly two arguments (a build target and a SCM URL "
                        "or archive file) are required"))
         assert False
+
     # Koji API has changed - activate_session requires two arguments
+    # _running_in_bg has been moved to koji_cli.lib
     try:
-        clikoji.activate_session(session)
-    except TypeError:
-        clikoji.activate_session(session, options)
+        from koji_cli.lib import _running_in_bg, activate_session
+    except ImportError:
+        # Create wrappers for backwards compatibility.
+        _running_in_bg = clikoij._runing_in_bg
+
+        def activate_session(session, options):
+            try:
+                clikoji.activate_session(session)
+            except TypeError:
+                clikoji.activate_session(session, options)
+    
+    activate_session(session, options)
+
+    if hasattr(clikoji, "_running_in_bg"):
+        _running_in_bg = clikoji._running_in_bg
+    else:
+        from koji_cli.lib import _running_in_bg
     target = args[0]
     if target.lower() == "none" and build_opts.repo_id:
         target = None
@@ -138,7 +154,7 @@ def handle_container_build(options, session, args):
         if not build_opts.quiet:
             print "Uploading archive: %s" % source
         serverdir = clikoji._unique_path('cli-build')
-        if clikoji._running_in_bg() or build_opts.noprogress or build_opts.quiet:
+        if _running_in_bg() or build_opts.noprogress or build_opts.quiet:
             callback = None
         else:
             callback = clikoji._progress_callback
@@ -150,8 +166,7 @@ def handle_container_build(options, session, args):
     if not build_opts.quiet:
         print "Created task:", task_id
         print "Task info: %s/taskinfo?taskID=%s" % (options.weburl, task_id)
-    if build_opts.wait or (build_opts.wait is None and not
-                           clikoji._running_in_bg()):
+    if build_opts.wait or (build_opts.wait is None and not _running_in_bg()):
         session.logout()
         rv = clikoji.watch_tasks(session, [task_id], quiet=build_opts.quiet)
 
