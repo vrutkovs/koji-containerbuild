@@ -29,7 +29,19 @@ from optparse import OptionParser
 # This hack is here because koji CLI isn't a module but we need to use some of
 # its functions. And this CLI don't necessary be named koji.
 clikoji = None
+# Koji API has changed - activate_session requires two arguments
+# _running_in_bg has been moved to koji_cli.lib
+try:
+    from koji_cli.lib import _running_in_bg, activate_session
+except ImportError:
+    # Create wrappers for backwards compatibility.
+    _running_in_bg = clikoij._runing_in_bg
 
+    def activate_session(session, options):
+        try:
+            clikoji.activate_session(session)
+        except TypeError:
+            clikoji.activate_session(session, options)
 
 # matches hub's buildContainer parameter channel
 DEFAULT_CHANNEL = 'container'
@@ -103,20 +115,6 @@ def handle_container_build(options, session, args):
         parser.error(_("Exactly two arguments (a build target and a SCM URL "
                        "or archive file) are required"))
         assert False
-
-    # Koji API has changed - activate_session requires two arguments
-    # _running_in_bg has been moved to koji_cli.lib
-    try:
-        from koji_cli.lib import _running_in_bg, activate_session
-    except ImportError:
-        # Create wrappers for backwards compatibility.
-        _running_in_bg = clikoij._runing_in_bg
-
-        def activate_session(session, options):
-            try:
-                clikoji.activate_session(session)
-            except TypeError:
-                clikoji.activate_session(session, options)
     
     activate_session(session, options)
 
